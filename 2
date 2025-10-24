@@ -1,0 +1,61 @@
+# Vytvoř složku/soubor profilu, pokud neexistují
+$dir = Split-Path -Parent $PROFILE
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
+
+$blockStart = '# >>> PROFILE-BLOCK START (exec policy + profile path) <<<'
+$blockEnd   = '# >>> PROFILE-BLOCK END <<<'
+$snippet = @"
+$blockStart
+//tento try catch block původně nefungoval, musel jsem otevřít notepad a přepsat to znovu.
+try {
+    $effectivePolicy = Get-ExecutionPolicy
+    Write-Host ("Execution policy: {0}" -f $effectivePolicy) -ForegroundColor Yellow
+    Write-Host ("Profile: {0}" -f $PROFILE) -ForegroundColor Green
+} catch { }
+$blockEnd
+"@
+
+# Idempotentní update (nahradí starý blok, nebo přidá nový)
+$content = Get-Content -Path $PROFILE -Raw
+if ($content -match [regex]::Escape($blockStart) -and $content -match [regex]::Escape($blockEnd)) {
+    $pattern = "(?s)$([regex]::Escape($blockStart)).*?$([regex]::Escape($blockEnd))"
+    $content = [regex]::Replace($content, $pattern, $snippet)
+    Set-Content -Path $PROFILE -Value $content -Encoding UTF8
+} else {
+    Add-Content -Path $PROFILE -Value "`r`n$snippet"
+}
+
+//Vytvoření aliasů:
+Set-Alias np notepad.exe
+Set-Alias ct control.exe
+
+//Exportování do json
+$aliasFile = Join-Path $env:USERPROFILE 'aliases.json'
+Get-Alias np, ct |
+  Select-Object Name, Definition, Options |
+  ConvertTo-Json -Depth 3 |
+  Set-Content -Path $aliasFile -Encoding UTF8
+
+#Ověření, že jsou vytvořené:
+Get-Alias np, ct
+  
+//Smazání aliasů:
+Remove-Item Alias:np -ErrorAction SilentlyContinue
+Remove-Item Alias:ct -ErrorAction SilentlyContinue
+
+#Ověření, že jsou smazané
+Get-Alias np, ct -ErrorAction SilentlyContinue
+
+//Obnovení z json:
+$aliasFile = Join-Path $env:USERPROFILE 'aliases.json'
+$import = Get-Content $aliasFile -Raw | ConvertFrom-Json
+# Zajistí, že i jediný objekt bude pole
+$import = @($import)
+
+foreach ($a in $import) {
+    Set-Alias -Name $a.Name -Value $a.Definition
+}
+
+# Ověření
+Get-Alias np, ct
