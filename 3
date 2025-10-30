@@ -1,0 +1,47 @@
+
+1)
+# Náhled celé třídy
+Get-CimClass -ClassName Win32_Printer
+
+# Jen seznam vlastností (jméno + typ)
+(Get-CimClass -ClassName Win32_Printer).CimClassProperties |
+  Select-Object Name, CimType, Qualifiers
+  
+Filtr podle názvu:
+
+$fax = Get-CimInstance -ClassName Win32_Printer -Filter "Name='Fax'"
+
+Změna lokace:
+Set-CimInstance -InputObject $fax -Property @{ Location = 'Serverovna' }
+
+----------------------------------------------------------------------------------------
+2)
+Zjíštění jména disku:
+
+Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'" |
+  Select-Object DeviceID, VolumeName
+
+Přejmenování disku:
+Set-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'" -Property @{ VolumeName = 'Systém' }
+--------------------------------------------------------------------------------------------
+3)
+__________CIM__________
+# Nepoužité lokální účty
+Get-CimInstance -ClassName Win32_NetworkLoginProfile |
+    Where-Object { $_.LocalAccount -eq $true -and -not $_.LastLogon } |
+    Select-Object Name, Disabled, LastLogon
+
+# Uzamčené lokální účty
+Get-CimInstance -ClassName Win32_UserAccount |
+    Where-Object { $_.LocalAccount -eq $true -and $_.Disabled -eq $false -and $_.Lockout -eq $true } |
+    Select-Object Name, Lockout, Disabled, SID
+
+_________CMDLET__________
+# Účty, ke kterým se nikdo nikdy nepřihlásil (LastLogon je $null)
+Get-LocalUser | Where-Object { -not $_.LastLogon } |
+  Select-Object Name, Enabled, LastLogon
+
+# Uzamčené účty
+Get-LocalUser | Where-Object { $_.LockedOut -eq $true } |
+  Select-Object Name, Enabled, LockedOut
+
