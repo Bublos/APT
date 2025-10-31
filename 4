@@ -1,0 +1,14 @@
+# Cesta k registru pro nastavení NumLock při přihlášení
+$RegPath = "Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard"
+$ValueName = "InitialKeyboardIndicators"
+
+# Získání aktuální hodnoty
+$CurrentValue = (Get-ItemProperty -Path $RegPath -Name $ValueName -ErrorAction Stop).$ValueName
+
+# Výpis
+Write-Host "Aktuální hodnota InitialKeyboardIndicators: $CurrentValue"
+
+# Nastavení numlocku na hodnotu 2
+Set-ItemProperty -Path $RegPath -Name $ValueName -Value "2"
+
+
