@@ -1,0 +1,202 @@
+<#
+.SYNOPSIS
+  Vypíše co nejpodrobnější seznam nainstalovaného softwaru ve Windows
+  z více zdrojů bez použití WMI/CIM.
+
+.ZDROJE
+  1) Registry Uninstall klíče (HKLM/HKCU, 32/64bit)
+  2) UWP / Store aplikace přes Get-AppxPackage
+  3) Balíčky z PackageManagement (Get-Package)
+
+.POUŽITÍ
+  .\Get-InstalledSoftware.ps1
+  # nebo
+  Get-InstalledSoftware | Format-Table -AutoSize
+  Get-InstalledSoftware | Export-Csv .\software.csv -NoTypeInformation -Encoding UTF8
+#>
+
+function Get-InstalledSoftware {
+    [CmdletBinding()]
+    param()
+
+    $results = @()
+
+    # -------------------------------------------------------------------------
+    # 1) Registry – klasický "Programs and Features"
+    # -------------------------------------------------------------------------
+    $uninstallPaths = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",              # 64bit apps (na 64bit OS)
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",  # 32bit apps na 64bit OS
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"               # uživatelské instalace
+    )
+
+    foreach ($path in $uninstallPaths) {
+        if (-not (Test-Path $path)) { continue }
+
+        Get-ChildItem -LiteralPath $path -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $p = Get-ItemProperty -LiteralPath $_.PsPath -ErrorAction Stop
+            } catch {
+                return
+            }
+
+            # Nezobrazuj prázdné položky bez DisplayName
+            if (-not $p.DisplayName) { return }
+
+            # Pokus o převod InstallDate z formátu YYYYMMDD
+            $installDate = $null
+            if ($p.InstallDate) {
+                try {
+                    $installDate = [datetime]::ParseExact($p.InstallDate.ToString(), 'yyyyMMdd', $null)
+                } catch {
+                    $installDate = $null
+                }
+            }
+
+            # Velikost je v KB, přepočet na MB
+            $estimatedSizeMB = $null
+            if ($p.EstimatedSize) {
+                $estimatedSizeMB = [math]::Round($p.EstimatedSize / 1024, 1)
+            }
+
+            $results += [PSCustomObject]@{
+                Name                 = $p.DisplayName
+                Version              = $p.DisplayVersion
+                Publisher            = $p.Publisher
+                InstallDate          = $installDate
+                InstallLocation      = $p.InstallLocation
+                UninstallString      = $p.UninstallString
+                QuietUninstallString = $p.QuietUninstallString
+                EstimatedSizeMB      = $estimatedSizeMB
+                Source               = "Registry"
+                RegistryKey          = $p.PSChildName
+                RegistryPath         = $path
+            }
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # 2) UWP / Store aplikace – Get-AppxPackage
+    # -------------------------------------------------------------------------
+    try {
+        $appxPackages = Get-AppxPackage -AllUsers -ErrorAction Stop
+
+        foreach ($a in $appxPackages) {
+            $results += [PSCustomObject]@{
+                Name                 = $a.Name
+                Version              = $a.Version
+                Publisher            = $a.PublisherDisplayName
+                InstallDate          = $null               # Appx to nepodává přímo
+                InstallLocation      = $a.InstallLocation
+                UninstallString      = $null
+                QuietUninstallString = $null
+                EstimatedSizeMB      = $null               # případně lze dopočítat z velikosti adresáře
+                Source               = "AppxPackage"
+                RegistryKey          = $null
+                RegistryPath         = $null
+            }
+        }
+    } catch {
+        Write-Verbose "Get-AppxPackage selhal: $_"
+    }
+
+    # -------------------------------------------------------------------------
+    # 3) PackageManagement – Get-Package (MSI, Winget, Chocolatey …)
+    # -------------------------------------------------------------------------
+    try {
+        $packages = Get-Package -ErrorAction Stop
+
+        foreach ($pkg in $packages) {
+            $results += [PSCustomObject]@{
+                Name                 = $pkg.Name
+                Version              = $pkg.Version
+                Publisher            = $pkg.ProviderName   # zde je Provider (Msiexec, Programs, Winget, Chocolatey…)
+                InstallDate          = $null
+                InstallLocation      = $null
+                UninstallString      = $null
+                QuietUninstallString = $null
+                EstimatedSizeMB      = $null
+                Source               = "Package:$($pkg.ProviderName)"
+                RegistryKey          = $null
+                RegistryPath         = $null
+            }
+        }
+    } catch {
+        Write-Verbose "Get-Package selhal: $_"
+    }
+
+        # -------------------------------------------------------------------------
+    # Sloučení a odstranění duplicit
+    #   - klíč: Name + InstallLocation (bez verze)
+    #   - při více verzích se ponechá nejnovější
+    # -------------------------------------------------------------------------
+    $dedupTable = @{}
+
+    foreach ($item in $results) {
+        if (-not $item.Name) { continue }
+
+        $name   = ($item.Name            -as [string]).ToLower().Trim()
+        $ver    = ($item.Version         -as [string]).Trim()
+        $loc    = ($item.InstallLocation -as [string]).ToLower().Trim()
+
+        # verzi nechceme v klíči, aby se různé verze stejného SW porovnávaly
+        $key = "{0}`n{1}" -f $name, $loc
+
+        if (-not $dedupTable.ContainsKey($key)) {
+            # první výskyt – ulož přímo
+            $dedupTable[$key] = $item
+        } else {
+            # záznam už máme – porovnáme verze a vybereme "vítěze"
+            $existing = $dedupTable[$key]
+
+            $useNew = $false
+
+            if ($item.Version -and $existing.Version) {
+                try {
+                    if ([version]$item.Version -gt [version]$existing.Version) {
+                        $useNew = $true
+                    }
+                } catch {
+                    # pokud nejde verzi přetypovat, neřešíme – necháme existing
+                    $useNew = $false
+                }
+            }
+            elseif ($item.Version -and -not $existing.Version) {
+                # nový má verzi, starý ne – použij nový
+                $useNew = $true
+            }
+
+            if ($useNew) {
+                # nový je "vítěz" – ale nechceme přijít o informace ze starého
+                $winner = $item.PSObject.Copy()
+                $loser  = $existing
+            } else {
+                $winner = $existing
+                $loser  = $item
+            }
+
+            # Sloučení Source (pokud nejsou stejné)
+            if ($loser.Source -and ($winner.Source -notlike "*$($loser.Source)*")) {
+                $winner.Source = ($winner.Source, $loser.Source) -join ", "
+            }
+
+            # Doplň chybějící detaily z "losera"
+            foreach ($prop in 'Publisher','InstallDate','InstallLocation','UninstallString','QuietUninstallString','EstimatedSizeMB','RegistryKey','RegistryPath') {
+                if (-not $winner.$prop -and $loser.$prop) {
+                    $winner.$prop = $loser.$prop
+                }
+            }
+
+            $dedupTable[$key] = $winner
+        }
+    }
+
+    # Výsledek seřazený podle názvu a verze
+    $dedupTable.Values | Sort-Object Name, Version
+}
+
+
+# Pokud je skript spuštěn přímo, výstup vypíše do konzole
+if ($MyInvocation.PSScriptRoot -ne "") {
+    Get-InstalledSoftware | Format-Table -AutoSize
+}
