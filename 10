@@ -63,9 +63,22 @@ Write-Host "[+] PHPSESSID: $($phpsessid.Value)" -ForegroundColor Green
 # 3) Nastavení security level na LOW
 Write-Host "[*] Krok 3: Nastavuji security=low ..." -ForegroundColor Cyan
 
+# Nejprve načteme security.php, abychom získali user_token
+$secGet = Invoke-WebRequest -Uri $securityUrl -WebSession $session
+$secTokenMatch = [regex]::Match($secGet.Content, $tokenRegex)
+
+if (-not $secTokenMatch.Success) {
+    Write-Host "[!] Nepodařilo se najít user_token na security stránce!" -ForegroundColor Red
+    throw "Missing security CSRF token"
+}
+
+$secToken = $secTokenMatch.Groups[1].Value
+Write-Host "    DEBUG security user_token: $secToken" -ForegroundColor DarkGray
+
 $securityBody = @{
     security      = "low"
     seclev_submit = "Submit"
+    user_token    = $secToken
 }
 
 Invoke-WebRequest -Uri $securityUrl -Method Post -Body $securityBody -WebSession $session | Out-Null
