@@ -1,0 +1,105 @@
+# watch-clipboard.ps1
+# Pravidelné sledování schránky a hledání klíčových slov "password" a "token"
+
+# Klíčová slova (můžeš si je upravit / rozšířit)
+$keywords = @("password", "token")
+
+# Poslední známý obsah schránky
+$lastClipboard = $null
+
+function Write-Highlighted {
+    param(
+        [string] $Text,
+        [string[]] $Keywords
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return
+    }
+
+    # Složíme jedno regexové pravidlo typu: (password|token)
+    $pattern = ($Keywords | ForEach-Object { [regex]::Escape($_) }) -join "|"
+
+    $matches = [regex]::Matches($Text, $pattern, 'IgnoreCase')
+
+    if ($matches.Count -eq 0) {
+        # Pokud nic nenalezeno, prostě vypíšeme řádek
+        Write-Host $Text
+        return
+    }
+
+    $pos = 0
+
+    foreach ($m in $matches) {
+        # Neobarvená část před nalezeným slovem
+        if ($m.Index -gt $pos) {
+            $plainPart = $Text.Substring($pos, $m.Index - $pos)
+            Write-Host -NoNewline $plainPart
+        }
+
+        # Nalezené klíčové slovo – barevně
+        Write-Host -NoNewline $m.Value -ForegroundColor Yellow
+
+        # Posuneme se za nalezené slovo
+        $pos = $m.Index + $m.Length
+    }
+
+    # Zbytek řádku za posledním klíčovým slovem
+    if ($pos -lt $Text.Length) {
+        $rest = $Text.Substring($pos)
+        Write-Host $rest
+    } else {
+        Write-Host ""
+    }
+}
+
+Write-Host "Monitoring clipboardu – ukonči pomocí Ctrl+C."
+Write-Host "Sledují se klíčová slova: $($keywords -join ', ')"
+Write-Host ""
+
+while ($true) {
+    try {
+        # -Raw aby se zachovaly nové řádky jako jeden string
+        $current = Get-Clipboard -Raw -ErrorAction Stop
+    }
+    catch {
+        # Když je schránka prázdná / nepodporovaný formát
+        $current = $null
+    }
+
+    # Reagujeme jen pokud se obsah skutečně změnil a není prázdný
+    if ($current -ne $lastClipboard -and -not [string]::IsNullOrWhiteSpace($current)) {
+        $lastClipboard = $current
+
+        # Zkontrolujeme, jestli text obsahuje nějaké z klíčových slov
+        $containsKeyword = $false
+        foreach ($kw in $keywords) {
+            if ($current -match [regex]::Escape($kw)) {
+                $containsKeyword = $true
+                break
+            }
+        }
+
+        if ($containsKeyword) {
+            $time = Get-Date -Format "HH:mm:ss"
+            Write-Host ""
+            Write-Host "[$time] Nalezeno klíčové slovo ve schránce:" -ForegroundColor Cyan
+            Write-Host "----------------------------------------------"
+
+            # Zachováme formátování – po řádcích
+            $lines = $current -split "`r?`n"
+            foreach ($line in $lines) {
+                Write-Highlighted -Text $line -Keywords $keywords
+            }
+
+            Write-Host "----------------------------------------------"
+        }
+    }
+
+    # Počkáme 20 sekund a pak kontrolujeme znovu
+    Start-Sleep -Seconds 20
+}
+
+
+
+Funguje to na clipboard v KKeePassXC, pokud se vejdu do intervalu 20 sekund
